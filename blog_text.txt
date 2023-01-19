@@ -1,0 +1,249 @@
+As the amount of data in the world continues to grow, the formats in which it is stored have also evolved. 
+
+Gone are the days of strictly structured data. Instead we are now dealing more and more with semi-structured formats such as XML and JSON. 
+
+These formats, while providing more flexibility and expressiveness, can also make working with the data more challenging. 
+
+With APIs outputting JSON data, it's essential to have a robust and efficient way to handle this data. 
+
+Snowflake offers a solution to this problem by providing an easy-to-use way for working with semi-structured and nested semi-structured data. 
+
+In this post, we will explore how to use Snowflake to work with JSON data, using one of my favorite topics - Star Wars - as an example. 
+
+Join me as we dive into the world of Star Wars characters and discover how to handle this data.
+
+
+
+Before we can start working, we first need to create a new database to hold our data. 
+
+In Snowflake, we can use the following command to create a new database:
+
+
+CREATE DATABASE IF NOT EXISTS PATRICKDB;
+view rawcreate_database.sql hosted with ❤ by GitHub
+With our database in place, the next step is to create a new schema specifically for our Star Wars data. 
+
+We use this command:
+
+
+CREATE SCHEMA IF NOT EXISTS PATRICKDB.STARWARS;
+view rawcreate_schema.sql hosted with ❤ by GitHub
+Now that we have our schema set up, we need data to work with. 
+
+I have shared a file on my Azure Blob Storage that contains JSON data, which we will use for our examples. 
+https://patricksdata.blob.core.windows.net/starwars/AllSWCharacters.json
+
+
+
+This data comes from an API created by Yoann Cribier, which is available on the GitHub page.
+https://github.com/akabab/starwars-api
+
+To access the data from the Azure Blob Storage, we first need to create a stage in Snowflake. 
+
+A stage is a location where data files are temporarily stored before they are loaded into a table. 
+
+Stages can be used to store data files in various formats, such as CSV, JSON, Avro, and Parquet.
+
+Stages serve as a buffer between the data files and the Snowflake tables, allowing for the data to be loaded and transformed before it is inserted into the final table. 
+
+Stages also enable the data files to be compressed, encrypted, and partitioned to optimize performance and reduce costs.
+
+In this case, we will create a stage for our Azure Blob Storage:
+
+
+CREATE STAGE PATRICKDB.STARWARS.AZUREBLOBSTORAGE
+URL = 'azure://patricksdata.blob.core.windows.net/starwars/';
+view rawcreate_stage.sql hosted with ❤ by GitHub
+To confirm that the stage has been created successfully, we can use the following command:
+
+
+SHOW STAGES;
+view rawshow_stages.sql hosted with ❤ by GitHub
+
+To see a list of the files that are stored on the stage, we use:
+LIST @AZUREBLOBSTORAGE;
+view rawlist_external_stage.sql hosted with ❤ by GitHub
+
+Now that we have our data on the stage, we need to create a file format that Snowflake can use to read the JSON files. 
+
+To create a file format we use the this code:
+
+
+CREATE OR REPLACE FILE FORMAT PATRICKDB.STARWARS.JSON_FILE_FORMAT
+TYPE = 'JSON' 
+COMPRESSION = 'AUTO' 
+ENABLE_OCTAL = FALSE
+ALLOW_DUPLICATE = FALSE 
+STRIP_OUTER_ARRAY = TRUE
+STRIP_NULL_VALUES = FALSE 
+IGNORE_UTF8_ERRORS = FALSE;
+view rawfile_format.sql hosted with ❤ by GitHub
+We confirm that the file format has been created successfully:
+
+
+SHOW FILE FORMATS;
+view rawshow_file_formats.sql hosted with ❤ by GitHub
+
+Since we have our file format ready now, we create a table in the new database to hold our JSON data.
+The next command creates a table named "CHARACTERS" within the "STARWARS" schema. 
+
+The "RAW" column is of type VARIANT, which allows us to store JSON data in a single column without having to define the schema beforehand. 
+
+This allows for more flexibility when working with the data, as you don't have to worry about the structure of the data changing over time.
+
+
+CREATE TABLE PATRICKDB.STARWARS.CHARACTERS
+("RAW" VARIANT);
+view rawcreate_the_table.sql hosted with ❤ by GitHub
+This command will show the content of the table, as the table is empty it will show only the header.
+
+
+SELECT * 
+FROM PATRICKDB.STARWARS.CHARACTERS;
+view rawselect_sw.sql hosted with ❤ by GitHub
+
+Next we can use the COPY INTO command to load the data from the stage into the table, using the file format that we created earlier. 
+The following code loads the data from the stage into the table, using our file format.
+
+
+COPY INTO PATRICKDB.STARWARS.CHARACTERS 
+FROM @PATRICKDB.STARWARS.AZUREBLOBSTORAGE
+files = ('AllSWCharacters.json')
+file_format = (FORMAT_NAME = 'JSON_FILE_FORMAT');
+view rawcopy_into.sql hosted with ❤ by GitHub
+After the data is loaded, we can use the SELECT statement again to query the data and check the output. 
+
+Note that Snowflake sorts the data alphabetically, so the output may look a bit different from the original JSON data.
+
+
+SELECT * 
+FROM PATRICKDB.STARWARS.CHARACTERS;
+view rawselect_sw.sql hosted with ❤ by GitHub
+
+
+
+Since that the data is now loaded into the table, we can use the functions that Snowflake provides to query the data and extract the information that we need.
+The first query extracts specific columns from the JSON data (feel free to add more columns from the file):
+
+
+SELECT 
+raw:id::NUMBER AS ID,
+raw:name::STRING AS NAME,
+raw:height::FLOAT AS HEIGHT,
+raw:homeworld::STRING AS HOMEWORLD
+FROM PATRICKDB.STARWARS.CHARACTERS;
+view rawfirst_select.sql hosted with ❤ by GitHub
+
+
+
+The next query uses the FLATTEN function to extract the nested array of affiliations from the JSON data:
+
+SELECT value::VARCHAR AS AFFILIATIONS
+FROM PATRICKDB.STARWARS.CHARACTERS
+,LATERAL FLATTEN
+(input => raw:affiliations)
+GROUP BY value::VARCHAR;
+view rawsecond_query.sql hosted with ❤ by GitHub
+
+
+
+The last query combines the first two queries to extract all the columns and affiliations in one query:
+
+SELECT 
+raw:id::NUMBER AS ID,
+raw:name::STRING AS NAME,
+raw:height::FLOAT AS HEIGHT,
+raw:homeworld::STRING AS HOMEWORLD,
+value::VARCHAR AS AFFILIATIONS
+FROM PATRICKDB.STARWARS.CHARACTERS
+,LATERAL FLATTEN
+(input => raw:affiliations);
+view rawtogether.sql hosted with ❤ by GitHub
+
+
+
+These are just a few examples of the types of queries that you can run on semi-structured data using Snowflake. 
+The functions provided by Snowflake give you a lot of flexibility when working with semi-structured data, and allow you to extract and manipulate the data in a way that is meaningful to you.
+
+But there is a small problem with our query above.
+
+All rows without an affiliation gets lost (id 47-50).
+
+Thats why we create this query with a CTE (Common table expression) and a LEFT JOIN.
+
+
+WITH flatten_data AS (
+   SELECT 
+      raw:id::NUMBER AS ID,
+      value::VARCHAR AS AFFILIATIONS
+   FROM PATRICKDB.STARWARS.CHARACTERS
+   ,LATERAL FLATTEN(input => raw:affiliations)
+)
+SELECT 
+   characters.raw:id::NUMBER AS ID,
+   characters.raw:name::STRING AS NAME,
+   characters.raw:height::FLOAT AS HEIGHT,
+   characters.raw:homeworld::STRING AS HOMEWORLD,
+   COALESCE(flatten_data.affiliations, NULL) AS AFFILIATIONS
+FROM PATRICKDB.STARWARS.CHARACTERS characters
+LEFT JOIN flatten_data ON characters.raw:id = flatten_data.ID
+ORDER BY ID;
+view rawfinal.sql hosted with ❤ by GitHub
+
+
+
+Since we dont lose data now, we create a view on top of this code:
+
+CREATE OR REPLACE VIEW PATRICKDB.STARWARS.CHARACTERS_NORMALIZED AS
+(WITH flatten_data AS (
+   SELECT 
+      raw:id::NUMBER AS ID,
+      value::VARCHAR AS AFFILIATIONS
+   FROM PATRICKDB.STARWARS.CHARACTERS
+   ,LATERAL FLATTEN(input => raw:affiliations)
+)
+SELECT 
+   characters.raw:id::NUMBER AS ID,
+   characters.raw:name::STRING AS NAME,
+   characters.raw:height::FLOAT AS HEIGHT,
+   characters.raw:homeworld::STRING AS HOMEWORLD,
+   COALESCE(flatten_data.affiliations, NULL) AS AFFILIATIONS
+FROM PATRICKDB.STARWARS.CHARACTERS characters
+LEFT JOIN flatten_data ON characters.raw:id = flatten_data.ID
+ORDER BY ID
+);
+view rawcreate_view.sql hosted with ❤ by GitHub
+Lastly we run the select * to have a look at the finished normalized data.
+
+
+SELECT * 
+FROM PATRICKDB.STARWARS.CHARACTERS_NORMALIZED;
+view rawfinal_select.sql hosted with ❤ by GitHub
+
+
+
+In conclusion, we have shown how to work with semi-structured JSON data in Snowflake, using the functions provided by the platform. 
+
+We have loaded the data from an Azure Blob Storage into a Snowflake table and used the FLATTEN function to extract the nested array of affiliations. 
+
+We also addressed the problem of losing rows with no affiliations by using a CTE and a LEFT JOIN. 
+
+Additionally, we created a view to simplify querying the data.
+
+Click on the chart button of the query result window.
+
+
+
+
+As a fun fact, we can see that most of the characters in our JSON data are affiliated with the Galactic Republic. 
+And as a Star Wars fan, I have to say that the Star Wars universe never gets old and is always a great topic to explore.
+
+With Snowflake, we can easily work with the data and discover new insights about the characters, factions, and events in the Star Wars universe.
+
+Thank you for following along, and I'll see you next time for maybe more data exploration with Snowflake?
+
+
+
+Greetings
+
+Patrick :)
